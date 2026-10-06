@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BgParallax CSS repro</title>
+<style>
+  :root { color-scheme: light; font: 15px/1.55 system-ui, sans-serif; }
+  body { margin: 0; padding: 16px; background: #fff; color: #1d1d1b; }
+  main { max-width: 1200px; margin: 0 auto; }
+  h1 { font-size: 22px; margin: 8px 0; }
+  .panes { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; margin-top: 16px; }
+  iframe { width: 100%; height: 75vh; border: 1px solid #ccc; border-radius: 8px; }
+  code { background: #f2f2f0; padding: 1px 4px; border-radius: 4px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Background-scroll presets render as no-ops through <code>generate()</code></h1>
+  <p>
+    Same page, same <code>@wix/interact@2.5.16</code> config (one <code>viewProgress</code> → <code>BgParallax</code>
+    effect, CSS from <code>generate()</code>), two builds of <code>@wix/motion-presets</code>.
+    Scroll inside each pane. With the released presets the keyframes use <code>var(--motion-parallax-speed)</code>
+    but nothing declares it, so <code>transform</code> computes to <code>none</code> and the background never moves.
+  </p>
+  <div class="panes">
+    <iframe src="./before.html" title="Released presets"></iframe>
+    <iframe src="./after.html" title="Patched presets"></iframe>
+  </div>
+</main>
+</body>
+</html>

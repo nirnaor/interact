@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BgParallax via generate() — before</title>
+<style>
+  :root { color-scheme: light; font: 15px/1.5 system-ui, sans-serif; }
+  body { margin: 0; background: #f6f6f4; color: #1d1d1b; }
+  header { padding: 16px; position: sticky; top: 0; z-index: 2; background: #f6f6f4ee; border-bottom: 1px solid #ddd; }
+  header h1 { font-size: 15px; margin: 0 0 6px; }
+  #readout { margin: 0; font: 13px/1.4 ui-monospace, monospace; padding: 6px 8px; border-radius: 6px; white-space: pre; }
+  #readout[data-moving="false"] { background: #fde2e1; color: #8a1c17; }
+  #readout[data-moving="true"] { background: #dff3e4; color: #145a2a; }
+  .spacer { height: 70vh; display: grid; place-items: center; color: #888; }
+  /* A Wix-style strip: the background media layer is what BgParallax moves (part BG_MEDIA). */
+  #strip { position: relative; height: 60vh; overflow: clip; display: grid; place-items: center; }
+  #strip [data-motion-part~="BG_MEDIA"] {
+    /* Like Wix, the media layer is taller than the strip so the parallax shift never exposes a gap. */
+    position: absolute; left: 0; right: 0; top: -60vh; height: calc(100% + 60vh);
+    background:
+      repeating-linear-gradient(0deg, transparent 0 58px, #1d1d1b 58px 62px),
+      linear-gradient(180deg, #e8a33d, #c2452d 50%, #3b2a5c);
+  }
+  #strip h2 { position: relative; margin: 0; color: #fff; font-size: 28px; text-shadow: 0 1px 6px #0008; }
+  pre#rule { margin: 16px; padding: 12px; background: #fff; border: 1px solid #ddd; border-radius: 6px; font: 12px/1.45 ui-monospace, monospace; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Released <code>@wix/motion-presets@1.0.7</code></h1>
+  <pre id="readout">loading…</pre>
+</header>
+<div class="spacer">scroll ↓</div>
+<section id="strip"><div data-motion-part="BG_MEDIA strip"></div><h2>BgParallax background</h2></section>
+<div class="spacer">↑ the striped background should move slower than the page</div>
+<p style="margin:16px">CSS that <code>generate()</code> emitted for the background layer:</p>
+<pre id="rule"></pre>
+<div class="spacer"></div>
+<script type="module" src="./before.js"></script>
+</body>
+</html>
