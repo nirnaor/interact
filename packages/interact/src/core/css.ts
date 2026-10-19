@@ -35,7 +35,13 @@ import {
 } from './cssUtils';
 import type { ListKind, ListSlots } from './cssUtils';
 import { effectToAnimationOptions } from '../handlers/utilities';
-import { getCSSAnimation, MotionKeyframeEffect, TriggerVariant } from '@wix/motion';
+import {
+  getCSSAnimation,
+  getRegisteredEffect,
+  MotionKeyframeEffect,
+  TriggerVariant,
+} from '@wix/motion';
+import type { AnimationEffectAPI } from '@wix/motion';
 
 // Before a viewEnter animation starts, its target must keep its own box: the IntersectionObserver that
 // triggers it measures that box. Transforms are reset for that, and so is clip-path: an entrance whose
@@ -57,13 +63,17 @@ type ListCounters = ListSlots & {
   touched: boolean;
 };
 type SlotUsage = Record<ListKind, boolean>;
-const NO_SLOTS: SlotUsage = { animation: false, transition: false };
+const NO_SLOTS: SlotUsage = { animation: false, transition: false, timeline: false };
+type KeyframeSlotMember = { slotKey: string; getNames: (suffix?: string) => string[] };
 type TargetContext = {
   key: string;
   childSelector?: string;
   assigned: Set<string>;
   animation: ListCounters;
   transition: ListCounters;
+  timeline: ListCounters;
+  // namedEffects by the animation list entry they write (see getKeyframeSlots)
+  keyframeEntries: Map<string, KeyframeSlotMember[]>;
 };
 type TargetsMap = Map<string, TargetContext>;
 
@@ -72,6 +82,9 @@ type GenerateContext = {
   configConditions: Record<string, Condition>;
   targetsMap: TargetsMap;
   keyframesMap: Map<string, Keyframe[]>;
+  keyframeSlots: Map<string, string>;
+  // only collecting the effects' list entries for getKeyframeSlots, without generating CSS
+  collectSlots: boolean;
   useFirstChild: boolean;
   plugins?: InteractPluginStyles;
 };
@@ -91,6 +104,8 @@ function createTargetContext(key: string, childSelector?: string): TargetContext
     assigned: new Set<string>(),
     animation: createListCounters(),
     transition: createListCounters(),
+    timeline: createListCounters(),
+    keyframeEntries: new Map<string, KeyframeSlotMember[]>(),
   };
 }
 
@@ -151,7 +166,7 @@ function getSlotUsage(sequence: ResolvedSequence): Map<string, SlotUsage> {
     }
 
     const targetHash = getElementHash(effect);
-    const count = counts.get(targetHash) || { animation: 0, transition: 0 };
+    const count = counts.get(targetHash) || { animation: 0, transition: 0, timeline: 0 };
     count[kind] += 1;
     counts.set(targetHash, count);
   });
@@ -159,7 +174,7 @@ function getSlotUsage(sequence: ResolvedSequence): Map<string, SlotUsage> {
   return new Map(
     [...counts].map(([targetHash, { animation, transition }]) => [
       targetHash,
-      { animation: animation > 1, transition: transition > 1 },
+      { animation: animation > 1, transition: transition > 1, timeline: false },
     ]),
   );
 }
@@ -189,10 +204,12 @@ const LIST_PROPERTY_NAMES_MOTION: Record<AnimationPropertyName, string> = {
   'animation-range': 'animationRange',
 };
 
+// the interaction's timeline is an entry of its source's view-timeline list
 function triggerToCSS(
   ctx: GenerateContext,
   interaction: Interaction,
   triggerId: string,
+  visited: Set<string>,
 ): CSSRuleData {
   const { key, conditions } = interaction;
 
@@ -205,6 +222,13 @@ function triggerToCSS(
     addItemFilter: true,
   });
 
+  const sourceHash = getElementHash(interaction);
+  const source = ctx.targetsMap.get(sourceHash) || createTargetContext(key, childSelector);
+  const name = getCustomProps(source, NO_SLOTS)['view-timeline'];
+  endEffect(source, { animation: false, transition: false, timeline: true }, NO_SLOTS);
+  ctx.targetsMap.set(sourceHash, source);
+  visited.add(sourceHash);
+
   return {
     key,
     media,
@@ -212,7 +236,7 @@ function triggerToCSS(
     childSelector,
     declarations: [
       {
-        name: 'view-timeline',
+        name,
         value: `--${triggerId}`,
       },
     ],
@@ -257,7 +281,7 @@ function effectToCSS(
   wrote: Record<ListKind, boolean>;
 } {
   const { assigned, childSelector } = target;
-  const wrote: Record<ListKind, boolean> = { animation: false, transition: false };
+  const wrote: Record<ListKind, boolean> = { animation: false, transition: false, timeline: false };
   const {
     key,
     effectId,
@@ -389,6 +413,24 @@ function effectToCSS(
   return { rules: rules.filter((r) => r.declarations.length), keyframes, wrote };
 }
 
+// records a namedEffect under the animation list entry it writes on its target
+function collectKeyframeEntry(target: TargetContext, effect: ResolvedEffect, entry: string) {
+  const module =
+    effect.namedEffect &&
+    (getRegisteredEffect(effect.namedEffect.type, false) as AnimationEffectAPI<'time'> | null);
+  if (!module?.getNames) {
+    return;
+  }
+  const getNames = (suffix?: string) =>
+    module.getNames({ ...effect, suffix } as Parameters<typeof module.getNames>[0]);
+  // effects that ignore the suffix can't use slots
+  if (getNames('-1').join() === getNames().join()) {
+    return;
+  }
+  const members = target.keyframeEntries.get(entry) || [];
+  target.keyframeEntries.set(entry, [...members, { slotKey: effect.slotKey!, getNames }]);
+}
+
 function parseEffect(
   ctx: GenerateContext,
   effect: ResolvedEffect,
@@ -412,6 +454,22 @@ function parseEffect(
 
   const useSlots = slotUsage?.get(targetHash) || NO_SLOTS;
   const customProps = getCustomProps(current, useSlots);
+
+  if (ctx.collectSlots) {
+    collectKeyframeEntry(current, effect, customProps.animation);
+    const kind = getEffectListKind(effect);
+    endEffect(
+      current,
+      { animation: kind === 'animation', transition: kind === 'transition', timeline: false },
+      useSlots,
+    );
+    ctx.targetsMap.set(targetHash, current);
+    return [];
+  }
+
+  if (effect.namedEffect) {
+    effect.suffix = ctx.keyframeSlots.get(effect.slotKey!);
+  }
 
   const { rules, keyframes, wrote } = effectToCSS(
     ctx,
@@ -488,16 +546,22 @@ function parseInteraction(
     id: ['trigger', interactionIdx].join('-'),
     componentId: '',
   } as TriggerVariant;
-  if (trigger === 'viewProgress') {
-    cssRules.push(triggerToCSS(ctx, interaction, motionTrigger.id));
-  }
-
   const visited = new Set<string>();
 
+  if (trigger === 'viewProgress') {
+    cssRules.push(triggerToCSS(ctx, interaction, motionTrigger.id, visited));
+  }
+
   const resolvedEffects = effects
-    .map((effect, effIndex) =>
-      resolveEffectForCSS(effect, interaction, ctx.config, `eff-${interactionIdx}-${effIndex}`),
-    )
+    .map((effect, effIndex) => {
+      const resolved = resolveEffectForCSS(
+        effect,
+        interaction,
+        ctx.config,
+        `eff-${interactionIdx}-${effIndex}`,
+      );
+      return resolved && Object.assign(resolved, { slotKey: getSlotKey(interactionIdx, effIndex) });
+    })
     .filter((effect) => effect !== null);
 
   cssRules.push(
@@ -506,7 +570,13 @@ function parseInteraction(
 
   const resolvedSequences = sequences
     .map((sequence, seqIndex) =>
-      resolveSequenceForCSS(sequence, interaction, ctx.config, `seq-${interactionIdx}-${seqIndex}`),
+      resolveSequenceForCSS(
+        sequence,
+        interaction,
+        ctx.config,
+        `seq-${interactionIdx}-${seqIndex}`,
+        (effIndex) => getSlotKey(interactionIdx, effIndex, seqIndex),
+      ),
     )
     .filter((sequence) => sequence !== null);
 
@@ -537,6 +607,68 @@ function normalizeGenerateOptions(options: boolean | GenerateOptions = {}): {
   return { useFirstChild, plugins };
 }
 
+function parseConfig(
+  config: InteractConfig,
+  options: { useFirstChild?: boolean; plugins?: InteractPluginStyles; collectSlots?: boolean },
+) {
+  const { useFirstChild = true, plugins, collectSlots = false } = options;
+  const ctx: GenerateContext = {
+    config,
+    configConditions: config.conditions || {},
+    targetsMap: new Map<string, TargetContext>(),
+    keyframesMap: new Map<string, Keyframe[]>(),
+    keyframeSlots: collectSlots ? new Map() : getKeyframeSlots(config),
+    collectSlots,
+    useFirstChild,
+    plugins,
+  };
+
+  const cssRules = config.interactions.flatMap((interaction, interactionIdx) =>
+    parseInteraction(ctx, interaction, interactionIdx),
+  );
+
+  return { ctx, cssRules };
+}
+
+export function getSlotKey(interactionIndex: number, effectIndex: number, sequenceIndex?: number) {
+  return [interactionIndex, sequenceIndex, effectIndex].filter((i) => i !== undefined).join(':');
+}
+
+/**
+ * Keyframes are shared between effects and parameterized by custom properties on their target, so effects that
+ * write different animation list entries of a target (they play together) need their own names when theirs collide:
+ * each entry takes the first slot free of the names of the target's other entries, and its effects' names are
+ * suffixed by it. Effects of the same entry cascade over each other, so they share its slot.
+ * Slots are chosen before any CSS is written, since a later effect of an entry can collide with an entry created
+ * after its first one. Uses the same traversal as generate(), so the runtime finds an effect's animations by its
+ * position.
+ *
+ * @returns the suffix of every effect not in the first slot, by its slot key (see getSlotKey)
+ */
+export function getKeyframeSlots(config: InteractConfig): Map<string, string> {
+  const { ctx } = parseConfig(config, { collectSlots: true });
+  const slots = new Map<string, string>();
+  const suffixOf = (slot: number) => (slot ? `-${slot}` : undefined);
+
+  ctx.targetsMap.forEach(({ keyframeEntries }) => {
+    const used = new Set<string>();
+    keyframeEntries.forEach((members) => {
+      const namesAt = (slot: number) => members.flatMap(({ getNames }) => getNames(suffixOf(slot)));
+      let slot = 0;
+      let names = namesAt(slot);
+      while (names.some((name) => used.has(name))) {
+        names = namesAt(++slot);
+      }
+      names.forEach((name) => used.add(name));
+      if (slot) {
+        members.forEach(({ slotKey }) => slots.set(slotKey, suffixOf(slot)!));
+      }
+    });
+  });
+
+  return slots;
+}
+
 export function _generate(
   config: InteractConfig,
   options?: boolean | GenerateOptions,
@@ -546,26 +678,14 @@ export function _generate(
   keyframes: Map<string, Keyframe[]>;
   atProperty: string[];
 } {
-  const { useFirstChild, plugins } = normalizeGenerateOptions(options);
-
-  const ctx: GenerateContext = {
-    config,
-    configConditions: config.conditions || {},
-    targetsMap: new Map<string, TargetContext>(),
-    keyframesMap: new Map<string, Keyframe[]>(),
-    useFirstChild,
-    plugins,
-  };
-
-  const cssRules = config.interactions.flatMap((interaction, interactionIdx) =>
-    parseInteraction(ctx, interaction, interactionIdx),
-  );
+  const { ctx, cssRules } = parseConfig(config, normalizeGenerateOptions(options));
 
   const targets = [...ctx.targetsMap.values()];
 
   const animationLength = Math.max(0, ...targets.map(({ animation }) => animation.listIndex));
   const transitionLength = Math.max(0, ...targets.map(({ transition }) => transition.listIndex));
-  const listsRule = buildListsRule(targets, animationLength, transitionLength);
+  const timelineLength = Math.max(0, ...targets.map(({ timeline }) => timeline.listIndex));
+  const listsRule = buildListsRule(targets, animationLength, transitionLength, timelineLength);
 
   const animationSlotLength = Math.max(0, ...targets.map(({ animation }) => animation.slotCursor));
   const transitionSlotLength = Math.max(
@@ -577,6 +697,7 @@ export function _generate(
     transitionLength,
     animationSlotLength,
     transitionSlotLength,
+    timelineLength,
   );
 
   return { keyframes: ctx.keyframesMap, atProperty, cssRules, listsRule };
