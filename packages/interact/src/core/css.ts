@@ -43,10 +43,6 @@ import {
 } from '@wix/motion';
 import type { AnimationEffectAPI } from '@wix/motion';
 
-// Before a viewEnter animation starts, its target must keep its own box: the IntersectionObserver that
-// triggers it measures that box. Transforms are reset for that, and so is clip-path: an entrance whose
-// backwards-filled first keyframe clips to nothing (TiltIn, ShuttersIn, Reveal...) would otherwise hide its
-// target from the observer, so it never enters the view and never plays.
 export const DEFAULT_INITIAL = [
   { name: 'visibility', value: 'hidden' },
   { name: 'clip-path', value: 'none', important: true },
